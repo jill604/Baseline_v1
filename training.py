@@ -3,11 +3,12 @@ import os
 import shutil
 
 
-import dataset.dataset as dtset
+import dataset.dataset1 as dtset
 import torch
 import numpy as np
 import random
-from metrics.metric_tool import ConfuseMatrixMeter
+#from metrics.metric_tool import ConfuseMatrixMeter
+from metrics import ChangeDetectionMetrics
 from models.change_classifier import ChangeClassifier as Model
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -78,7 +79,7 @@ def train(
 
     model = model.to(device)
 
-    tool4metric = ConfuseMatrixMeter(n_class=2)
+    tool4metric = ChangeDetectionMetrics(n_class=2)
 
     def evaluate(reference, testimg, mask):
         # All the tensors on the device:

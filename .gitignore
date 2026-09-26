@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# 训练产物与权重 (不入库, 只保留代码)
+runs/
+logs/
+pretrained_models/
+*.pth
+.DS_Store

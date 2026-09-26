@@ -1,115 +1,67 @@
-from typing import List, Tuple
-from collections import Sized
-from os.path import join
-import albumentations as alb
-from torchvision.transforms import Normalize
-
-import numpy as np
+# 替换后的 dataset/dataset.py
+import os
 import torch
-from matplotlib.image import imread
 from torch.utils.data import Dataset
-from torch import Tensor
+from PIL import Image
+import torchvision.transforms as T
+import random
 
-
-class MyDataset(Dataset, Sized):
-    def __init__(
-        self,
-        data_path: str,
-        mode: str,
-    ) -> None:
+class MyDataset(Dataset):
+    def __init__(self, data_path, mode='train'):
         """
-        data_path: Folder containing the sub-folders:
-            "A" for test images,
-            "B" for ref images, 
-            "label" for the gt masks,
-            "list" containing the image list files ("train.txt", "test.txt", "eval.txt").
+        mode: 'train', 'val' 或 'test'
         """
-        # Store the path data path + mode (train,val,test):
-        self._mode = mode
-        self._A = join(data_path, "A")
-        self._B = join(data_path, "B")
-        self._label = join(data_path, "label")
-
-        # In all the dirs, the files share the same names:
-        self._list_images = self._read_images_list(data_path)
-
-        # Initialize augmentations:
-        if mode == 'train':
-            self._augmentation = _create_shared_augmentation()
-            self._aberration = _create_aberration_augmentation()
+        super().__init__()
+        self.data_path = data_path
+        self.mode = mode
         
-        # Initialize normalization:
-        self._normalize = Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-
-    def __getitem__(self, indx):
-        # Current image set name:
-        imgname = self._list_images[indx].strip('\n')
-
-        # Loading the images:
-        x_ref = imread(join(self._A, imgname))
-        x_test = imread(join(self._B, imgname))
-        x_mask = _binarize(imread(join(self._label, imgname)))
-
-        # Data augmentation in case of training:
-        if self._mode == "train":
-            x_ref, x_test, x_mask = self._augment(x_ref, x_test, x_mask)
-
-        # Trasform data from HWC to CWH:
-        x_ref, x_test, x_mask = self._to_tensors(x_ref, x_test, x_mask)
-
-        return (x_ref, x_test), x_mask
+        # 严格读取官方划分列表
+        list_file = os.path.join(data_path, 'list', f'{mode}.txt')
+        with open(list_file, 'r') as f:
+            self.name_list = [line.strip() for line in f.readlines()]
+            
+        # 铁律1：必须是 ImageNet 均值方差归一化
+        self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406], 
+                                     std=[0.229, 0.224, 0.225])
+        # 铁律2：尺寸必须强制 256
+        self.to_tensor = T.Compose([
+            T.Resize((256, 256)),
+            T.ToTensor()
+        ])
 
     def __len__(self):
-        return len(self._list_images)
+        return len(self.name_list)
 
-    def _read_images_list(self, data_path: str) -> List[str]:
-        images_list_file = join(data_path,'list', self._mode + ".txt")
-        with open(images_list_file, "r") as f:
-            return f.readlines()
-    
-    def _augment(
-        self, x_ref: np.ndarray, x_test: np.ndarray, x_mask: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        # First apply augmentations in equal manner to test/ref/x_mask:
-        transformed = self._augmentation(image=x_ref, image0=x_test, x_mask0=x_mask)
-        x_ref = transformed["image"]
-        x_test = transformed["image0"]
-        x_mask = transformed["x_mask0"]
+    def __getitem__(self, index):
+        name = self.name_list[index]
+        # 根据 TinyCD 的要求，读取 A, B 和 label 文件夹
+        img_a = Image.open(os.path.join(self.data_path, 'A', name)).convert('RGB')
+        img_b = Image.open(os.path.join(self.data_path, 'B', name)).convert('RGB')
+        mask = Image.open(os.path.join(self.data_path, 'label', name)).convert('L') # 灰度图
 
-        # Then apply augmentation to single test ref in different way:
-        x_ref = self._aberration(image=x_ref)["image"]
-        x_test = self._aberration(image=x_test)["image"]
+        # 铁律3：自己手写严格的数据增强 (仅水平、垂直、旋转90度)
+        if self.mode == 'train':
+            if random.random() > 0.5:
+                img_a = img_a.transpose(Image.FLIP_LEFT_RIGHT)
+                img_b = img_b.transpose(Image.FLIP_LEFT_RIGHT)
+                mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
+            if random.random() > 0.5:
+                img_a = img_a.transpose(Image.FLIP_TOP_BOTTOM)
+                img_b = img_b.transpose(Image.FLIP_TOP_BOTTOM)
+                mask = mask.transpose(Image.FLIP_TOP_BOTTOM)
+            if random.random() > 0.5:
+                img_a = img_a.transpose(Image.ROTATE_90)
+                img_b = img_b.transpose(Image.ROTATE_90)
+                mask = mask.transpose(Image.ROTATE_90)
 
-        return x_ref, x_test, x_mask
-    
-    def _to_tensors(
-        self, x_ref: np.ndarray, x_test: np.ndarray, x_mask: np.ndarray
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        return (
-            self._normalize(torch.tensor(x_ref).permute(2, 0, 1)),
-            self._normalize(torch.tensor(x_test).permute(2, 0, 1)),
-            torch.tensor(x_mask),
-        )
+        # 转 Tensor & 归一化
+        img_a = self.normalize(self.to_tensor(img_a))
+        img_b = self.normalize(self.to_tensor(img_b))
+        
+        # Mask 处理：保证尺寸 256，且像素值为 0 或 1
+        mask = T.Resize((256, 256), interpolation=T.InterpolationMode.NEAREST)(mask)
+        mask = T.ToTensor()(mask)
+        mask = (mask > 0).float() # 二值化保护
 
-
-def _create_shared_augmentation():
-    return alb.Compose(
-        [
-            alb.Flip(p=0.5),
-            alb.Rotate(limit=5, p=0.5),
-        ],
-        additional_targets={"image0": "image", "x_mask0": "mask"},
-    )
-
-
-def _create_aberration_augmentation():
-    return alb.Compose([
-        alb.RandomBrightnessContrast(
-            brightness_limit=0.2, contrast_limit=0.2, p=0.5
-        ),
-        alb.GaussianBlur(blur_limit=[3, 5], p=0.5),
-    ])
-
-def _binarize(mask: np.ndarray) -> np.ndarray:
-    return np.clip(mask * 255, 0, 1).astype(int)
+        # TinyCD 返回通常是一个字典或元组，这里保持元组格式以兼容
+        return img_a, img_b, mask

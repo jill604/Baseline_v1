@@ -1,5 +1,5 @@
 import torch
-from dataset.dataset import MyDataset
+from dataset.dataset1 import MyDataset
 import tqdm
 from torch.utils.data import DataLoader
 from metrics.metric_tool import ConfuseMatrixMeter
@@ -15,7 +15,7 @@ def parse_arguments():
         "--datapath",
         type=str,
         help="data path",
-        default="/home/codegoni/aerial/WHU-CD-256/WHU-CD-256",
+        default="/home/mvai/Documents/zyn/TinyCD_data",
     )
     parser.add_argument(
         "--modelpath",
@@ -43,7 +43,13 @@ if __name__ == "__main__":
     # Initialisation of the model and print model stat
     model = ChangeClassifier()
     modelpath = args.modelpath
-    model.load_state_dict(torch.load(modelpath))
+    state_dict = torch.load(modelpath)
+    # 官方权重由旧版代码保存,仅 _mixing_mask.2 的 key 多了一层 "_mixing." 前缀,加载前先映射:
+    state_dict = {
+        k.replace("_mixing_mask.2._mixing._convmix.", "_mixing_mask.2._convmix."): v
+        for k, v in state_dict.items()
+    }
+    model.load_state_dict(state_dict)
 
     # Print the number of model parameters 
     param_tot = sum(p.numel() for p in model.parameters())
